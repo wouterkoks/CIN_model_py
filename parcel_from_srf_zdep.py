@@ -74,7 +74,6 @@ class Parcel_sv:
         self.T0 = None
         self.wstar = None
         
-        self.not_buoy = False
         self.never_buoy = False
         self.above_lfc = False   
         self.above_lcl = False
@@ -118,7 +117,6 @@ class Parcel:
         self.T0 = None
         self.wstar = None
         
-        self.not_buoy = False
         self.never_buoy = False
         self.above_lfc = False   
         self.above_lcl = False
@@ -126,9 +124,6 @@ class Parcel:
         self.parcel_dry = False
         self.inhibited = False
         
-
-        
-
 
 def calc_pres(p0, T0, q0, gth, gq, z):
     """"Specify hydrostatic pressure profile based on constant gradient of virtual potential temp."""
@@ -219,7 +214,6 @@ def calc_thermo(T_i, pres_i, qt_i, exner_i, thl_i):
 
     ql_i = max(0, qt_i - qsat_i)
     thv_i = (T_i / exner_i) * (1 + tv_const * qt_i - (1 + tv_const) * ql_i)
-
     return T_i, qsat_i, ql_i, thv_i
 
 
@@ -241,7 +235,7 @@ def init_conditions(mlm):
     # environmental profile initialization
     env = Env()
     env_sv = Env_sv(mlm.input.n_pts)
-    env_sv.z = np.linspace(0, mlm.zmax, mlm.input.n_pts)
+    env_sv.z = np.linspace(0, mlm.input.zmax, mlm.input.n_pts)
     env.dz = env_sv.z[1] - env_sv.z[0]
 
     ind_h = np.searchsorted(env_sv.z, mlm.h, side='right') 
@@ -252,24 +246,24 @@ def init_conditions(mlm):
         z_bins = mlm.heightdep['gammatheta'][0]
         gammatheta_bins  = mlm.heightdep['gammatheta'][1] 
         
-        if z_bins[-1] < mlm.zmax:
+        if z_bins[-1] < mlm.input.zmax:
             print("Increase height range of height dependent variables.")
         #calc input profile
-        env_sv.thl = calc_input_prof(env_sv.z, mlm.input.theta_ft0, mlm.input.h, z_bins, gammatheta_bins, mlm.input.theta)
+        env_sv.thl = calc_input_prof(env_sv.z, mlm.theta_ft0, mlm.input.h, z_bins, gammatheta_bins, mlm.input.theta)
     else: 
-        env_sv.thl[ind_h:] = mlm.input.theta_ft0 + env_sv.z[ind_h:] * mlm.input.gammatheta
-        
+        env_sv.thl[ind_h:] = mlm.theta_ft0 + env_sv.z[ind_h:] * mlm.input.gammatheta
+
     env_sv.thl[:ind_h] = mlm.theta
     
     if 'gammaq' in mlm.heightdep:
         z_bins = mlm.heightdep['gammaq'][0]
         gammaq_bins  = mlm.heightdep['gammaq'][1] 
-        if z_bins[-1] < mlm.zmax:
+        if z_bins[-1] < mlm.input.zmax:
             print("Increase height range of height dependent variables.")
         #calc input profile
-        env_sv.qt = calc_input_prof(env_sv.z, mlm.input.q_ft0, mlm.input.h, z_bins, gammaq_bins, mlm.input.q)
+        env_sv.qt = calc_input_prof(env_sv.z, mlm.q_ft0, mlm.input.h, z_bins, gammaq_bins, mlm.input.q)
     else:  
-        env_sv.qt[ind_h:] = mlm.input.q_ft0 + env_sv.z[ind_h:] * mlm.input.gammaq
+        env_sv.qt[ind_h:] = mlm.q_ft0 + env_sv.z[ind_h:] * mlm.input.gammaq
     
     env_sv.qt[:ind_h] = mlm.q
     env_sv.qt[env_sv.qt < 0] = 0
@@ -280,9 +274,9 @@ def init_conditions(mlm):
         env_sv.qt[ind_h:ind_store] += mlm.Sq / mlm.hstore
     
     if 'gammatheta' in mlm.input.heightdep and 'gammaq' in mlm.input.heightdep:
-        env_sv.pres, env_sv.exner = calc_pres_zdep_gradients(mlm.input.Ps, mlm.input.theta_ft0, mlm.input.q_ft0, mlm.input.heightdep['gammatheta'][1], mlm.input.heightdep['gammaq'][1], mlm.input.heightdep['gammatheta'][0], env_sv.z)  # make exner array
+        env_sv.pres, env_sv.exner = calc_pres_zdep_gradients(mlm.input.Ps, mlm.theta_ft0, mlm.q_ft0, mlm.input.heightdep['gammatheta'][1], mlm.input.heightdep['gammaq'][1], mlm.input.heightdep['gammatheta'][0], env_sv.z)  # make exner array
     else:
-        env_sv.pres, env_sv.exner = calc_pres(mlm.input.Ps, mlm.input.theta_ft0, mlm.input.q_ft0, mlm.input.gammatheta, mlm.input.gammaq, env_sv.z)  # make exner array
+        env_sv.pres, env_sv.exner = calc_pres(mlm.input.Ps, mlm.theta_ft0, mlm.q_ft0, mlm.input.gammatheta, mlm.input.gammaq, env_sv.z)  # make exner array
     temp_env = env_sv.exner * env_sv.thl
     env_sv.Tv = temp_env * (1 + tv_const * env_sv.qt)
     env_sv.thv = env_sv.thl * (1 + tv_const * env_sv.qt)
@@ -294,17 +288,17 @@ def init_conditions(mlm):
     parcel = Parcel()
     
     parcel.wstar = mlm.wstar
-    parcel.w = mlm.wstar
+    parcel.w = mlm.wstar 
     parcel.temp = mlm.theta 
-    parcel.qt  = mlm.q + 0.51 * np.sqrt(mlm.q2_h)
+    parcel.qt  = mlm.q + mlm.input.phi_cu * np.sqrt(mlm.q2_h)
+
     qsat_p = calc_sat(parcel.temp, mlm.input.Ps)
     qvp = min(parcel.qt, qsat_p)
     parcel.ql = max(parcel.qt - qvp, 0)
     parcel.qsat = qsat_p    
-    parcel.thl = parcel.temp
+    parcel.thl = parcel.temp - Lv * parcel.ql / cp 
     parcel.temp = parcel.temp
     parcel.thv = parcel.temp * (1 + tv_const * qvp - parcel.ql) 
-    parcel.Tv = parcel.thv
     return parcel, env, env_sv
 
 
@@ -318,8 +312,12 @@ def check_if_stop(parcel, env, mlm):
     
     if not parcel.above_lfc:
         parcel.above_lfc = (parcel.above_lcl and parcel.thv > env.thv and env.z > mlm.h) 
+        
+    if parcel.w <= 0:
+        parcel.w = 0
+        parcel.inhibited = True
             
-    cond_lst = [parcel.not_buoy, parcel.parcel_dry, parcel.inhibited, parcel.above_lfc]  # list of reasons to stop the loop
+    cond_lst = [parcel.parcel_dry, parcel.inhibited, parcel.above_lfc]  # list of reasons to stop the loop
     return cond_lst 
 
 
@@ -346,7 +344,6 @@ def simulate(mlm):
             print(env.thv)
 
     for i in range(1,mlm.input.n_pts - 1):
-
         # entrainment
         if env.z > mlm.h: # start entrainment from h_ml, since I initialize the plume using properties at the mixing height.
             if parcel.above_lcl:
@@ -365,20 +362,17 @@ def simulate(mlm):
         # calculate parcel thermodynamic properties at new height level
         parcel.temp, parcel.qsat, parcel.ql, parcel.thv = calc_thermo(parcel.temp, env_sv.pres[i], parcel.qt, env_sv.exner[i], parcel.thl)
         
-        if ((parcel.thv < env.thv) and env.z > mlm.h and not parcel.above_lfc):
+        if ((parcel.thv < env.thv) and env.z > mlm.h):
             parcel.B    = g * (parcel.thv - env.thv) / env.thv
             parcel.w   +=  env.dz * (- c1 * parcel.ent * parcel.w + c2 * parcel.B / parcel.w)
             parcel.cin -= parcel.B * env.dz 
-            if parcel.w <= 0:
-                parcel.w = 0
-                parcel.inhibited = True
-
         
         # some logics to determine whether the simulation should continue
         cond_lst = check_if_stop(parcel, env, mlm)
         
         if mlm.input.save_ent_plume:
             parcel_sv.save(parcel, i)
+        
 
         
         if sum(cond_lst):
@@ -386,6 +380,7 @@ def simulate(mlm):
             i_final = i - 1
             if not parcel.above_lfc:
                 parcel.w = 0
+                parcel.cin = np.nan
             break
     
     return stop_cond, i_final, parcel, parcel_sv, env_sv
@@ -398,16 +393,16 @@ def main(mlm):
     
     # run the entraining plume model
     stop_cond, i_final, parcel, parcel_sv, env_sv = simulate(mlm) 
-    # if stop_cond == 3 and mlm.t % 10 == 0:
-    #     parcel_sv.remove_fromi(i_final)
-    #     env_sv.remove_fromi(i_final)
-    #     plt.figure()
-    #     plt.plot(parcel_sv.thv, env_sv.z)
-    #     plt.plot(env_sv.thv, env_sv.z)
-    #     plt.show()
+
     if mlm.input.save_ent_plume:
         parcel_sv.remove_fromi(i_final)
         env_sv.remove_fromi(i_final)
+
+        # if (stop_cond == 2):
+        #     plt.figure()
+        #     plt.plot(env_sv.thv, env_sv.z)
+        #     plt.plot(parcel_sv.thv, env_sv.z)
+        #     plt.show()
         
     else:
         env_sv = None
@@ -438,29 +433,29 @@ if __name__ == '__main__':
     mlm.input = Sv
     
     mlm.h = 400  # mixed-layer height
-    mlm.zmax = 5e3  # max simulation height
+    mlm.input.zmax = 5e3  # max simulation height
     mlm.input.n_pts = 500
     mlm.input.Ps = 1e5
-    mlm.input.theta_ft0 = 298.6
+    mlm.theta_ft0 = 298.6
     mlm.theta = 300
 
-
     mlm.input.gammatheta = 3.7e-3
-    mlm.dtheta = mlm.input.theta_ft0 - mlm.theta + mlm.input.gammatheta * mlm.h
+    mlm.dtheta = mlm.theta_ft0 - mlm.theta + mlm.input.gammatheta * mlm.h
     
-    mlm.input.q_ft0 = 0.8 * calc_sat(mlm.input.theta_ft0, mlm.input.Ps)
-    print(mlm.input.q_ft0)
+    mlm.q_ft0 = 0.8 * calc_sat(mlm.theta_ft0, mlm.input.Ps)
+    print(mlm.q_ft0)
     mlm.q = 15e-3
     mlm.input.gammaq = - 3.5e-6
     mlm.q2_h = 5e-6  # specific humidity variance at mixing height!
-    mlm.dq = mlm.input.q_ft0 - mlm.q + mlm.input.gammaq * mlm.h
+    mlm.dq = mlm.q_ft0 - mlm.q + mlm.input.gammaq * mlm.h
     mlm.input.sw_store = True  # modify env profiles with tropospheric storage
-    mlm.Stheta = -0.1 * 3e3  
+    mlm.Stheta = -0 * 3e3  
     mlm.hstore = 3e3  # height over which tropospheric scalars are stored
-    mlm.Sq = 1
+    mlm.Sq = 0
     mlm.thetav = mlm.theta * (1 + tv_const * mlm.q)
     
     mlm.input.c_ent = 0.004  # not used if a non-constant entrainment rate is used 
+    mlm.input.phi_cu = 0.51
     mlm.input.wcld_prefact = 0.84  # prefactor to estimate w_hml from wstar 
     mlm.wstar = 4 # Deardorff velocity scale
     mlm.input.ent_corr_factor = 0.7
@@ -477,7 +472,8 @@ if __name__ == '__main__':
     
     # run simulation
     cin, w_lfc, parcel_sv, env_sv = main(mlm)
-    
+    print(w_lfc)
+    print(cin)
     # plotting
     fsize = 12
     imax = 200

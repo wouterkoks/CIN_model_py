@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import netCDF4 as nc
 import os
-BOMEX = False
+
 
 
 def calc_sat(temp, pref):
@@ -57,13 +57,13 @@ def initial_profs(data):
 
     
 
-def make_fits(data):
+def make_fits(data, bomex=False):
     '''Calculate h_ml using fit or DALES' output, calculate thml and qvml using fit. '''
     
     thml = np.zeros_like(data.time)
     qtml = np.zeros_like(data.time)
     h_ml = np.zeros_like(data.time)
-    if BOMEX: 
+    if bomex: 
         hmax = 1e3
     else:
         hmax = 2e3
@@ -86,10 +86,11 @@ def make_fits(data):
 
         
 
-def main(upper_dir, info=True):
-
-    if BOMEX:
+def main(upper_dir, bomex=False, info=True):
+    print(bomex)
+    if bomex:
         default_dir = upper_dir + '/bomex.default.0000000.nc'
+        core_dir = upper_dir + '/bomex.qlcore.0000000.nc'
     else:
         default_dir = upper_dir + '/arm.default.0000000.nc'
         core_dir = upper_dir + '/arm.qlcore.0000000.nc'
@@ -111,10 +112,14 @@ def main(upper_dir, info=True):
     data.ql = np.array(prof['thermo/ql'])[t_range]
     data.thv = np.array(prof['thermo/thv'])[t_range]
     data.wthv = np.array(prof['thermo/thv_flux'])[t_range]
+    data.qt_2 = np.array(prof['thermo/qt_2'])[t_range]
     # data.qt2r = np.array(prof['thermo/qt2r'])[t_range]
     data.zi = np.array(prof['thermo/zi'])[t_range]
     data.acc = np.array(core['default/areah'])[t_range]
     data.wcc = np.array(core['default/w'])[t_range]
+    data.qtcc = np.array(core['thermo/qt'])[t_range]
+    data.wqM = np.array(core['thermo/qt_flux'])[t_range]
+    
     
     return data, z
     
@@ -132,8 +137,9 @@ class sv():
 
 if __name__ == "__main__":
     upper_dir = 'C:/Users/Wouter Koks/Desktop/MEP/LES_Bart' 
-    data, z = main(upper_dir)
-    
+    bomex = False
+    data, z = main(upper_dir, bomex)
+
 
     idt = 10
     t_eval = len(data.time) -idt - 1 
@@ -146,12 +152,102 @@ if __name__ == "__main__":
 
     thml, qtml, h_ml = make_fits(data)
     
+    
+    
+    #%%
+    t_les = data.time/3600 + 11.5
+    print(data.qtcc)
+    fsize = 14
+    data.qtcc[data.qtcc > 1] = np.nan
+    data.qt_2[data.qt_2 > 1] = np.nan
+    data.qt_2[data.qt_2 == 0] = np.nan
+    if bomex:
+        h_ml[h_ml > 700] = np.nan   # remove bad data
+
+
+    plt.figure()
+    plt.plot(data.time, h_ml)
+    plt.show()
+    
+    i_acc_max = np.argmax(data.acc, axis=1)
+    plt.figure()
+    plt.plot(data.acc[500, 1:], data.z)
+    plt.hlines(data.z[i_acc_max[500]], 0, np.max(data.acc[500]), colors='k', linestyle='--')
+    plt.xlabel(r"$a_\mathrm{cc}$", fontsize=fsize)
+    plt.ylabel(r"$z$", fontsize=fsize)
+    plt.xlim([0, 0.06])
+    plt.show()
+    
+    plt.figure()
+    plt.plot(data.qtcc[500], data.z)
+    plt.hlines(data.z[i_acc_max[500]], 0.014, 0.0175, colors='k', linestyle='--')
+    plt.xlabel(r"$q_{t,cc}$", fontsize=fsize)
+    plt.ylabel(r'z', fontsize=fsize)
+    plt.show()
+    
+    indh = np.zeros(len(data.time), dtype=int)
+    q2_h = np.zeros_like(data.time)
+
+
+    qtcc_accmax = np.zeros_like(data.time)
+    qtcc_mean = np.zeros_like(data.time)
+    for it in range(len(data.time)):
+        if not np.isnan(h_ml[it]):
+            indh[it] = np.where(data.z > h_ml[it])[0][0]
+            q2_h[it] = np.interp(h_ml[it], data.z, data.qt_2[it])  # find q2_h at h using interpolation
+            imax_cc  = np.argmax(data.acc[it])   # height-index at which cloud core fraction is maximized
+            qtcc_accmax[it] = data.qtcc[it, imax_cc]
+            qtcc_mean[it] = np.nanmean(data.qtcc[it])
+
+    q2_h[q2_h == 0] = np.nan
+    plt.figure()
+    plt.plot(data.time/3600+11.5, qtml, label=r'$q_\mathrm{t,ml}$')
+    plt.plot(data.time/3600+11.5, qtcc_accmax, label=r'$q_\mathrm{t,cc}$')
+    plt.xlim([12.5, 12.5+12])
+    plt.ylim([0.014, 0.017])
+
+    plt.legend(fontsize=12)
+    plt.show()
+    plt.figure()
+    plt.plot(data.time, np.sqrt(q2_h))
+    plt.show()
+    var = (qtcc_accmax - qtml) / np.sqrt(q2_h)
+
+    # var[var > 10] = np.nan
+
+    plt.figure()
+    plt.plot(data.time/3600+11.5, var)
+    plt.ylabel('$\phi$')
+    plt.title('BOMEX')
+    plt.ylim([0,1])
+    plt.show()
+    #%%
+    wstar = (9.81 * h_ml * data.wthv[:, 0] / data.thv[:, 0]) ** (1. / 3.)      
+    i_arr = np.arange(len(data.time))
+
+    wcc = data.wcc[i_arr, i_acc_max]
+    wcc[wcc > 10] = np.nan
+    # wcc[wcc > 10] = np.nan
+    plt.figure()
+    # plt.plot(t_les, wcc/wstar)
+    plt.plot(t_les, wstar, label=r'$w_\star$')
+    plt.plot(t_les, wcc, label=r'$w_{cc}$')
+    # plt.ylabel(r'$w_\mathrm{cc}/w_\star$ (-)', fontsize=fsize)
+    plt.ylabel(r'$w$ (ms-1)', fontsize=fsize)
+    plt.xlabel('t (h UTC)', fontsize=fsize)
+    plt.legend(fontsize=12)
+    plt.ylim(0,2)
+    plt.title("BOMEX")
+    # plt.title("ARM")
+    plt.show()
+
+    
     #%%
     mlm_saveloc ='new_outputs/testcase.txt'   # first create a dir "new_outputs", the script doesnt do this yet
     init_params = sv()
     init_params.tstart = 1
     if init_params.tstart == 0:
-        if not BOMEX: 
+        if not bomex: 
             init_params.h = 50
             init_params.theta0 = 299 + 1.25
             init_params.q0 = 15.185e-3
@@ -166,7 +262,7 @@ if __name__ == "__main__":
         init_params.h = 140
         init_params.q = 15.3e-3 + 0.2e-3
         init_params.theta = 301.4 
-        if BOMEX:
+        if bomex:
             init_params.theta0 = 298.7
             init_params.q0 = 17e-3
         else:

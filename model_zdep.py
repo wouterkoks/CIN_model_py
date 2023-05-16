@@ -105,7 +105,6 @@ class model:
         self.ls_type    = self.input.ls_type    # land surface paramaterization (js or ags)
         self.sw_cu      = self.input.sw_cu      # cumulus parameterization switch
 
-
         self.sw_plume       = self.input.sw_plume    # entraining plume diagnostics switch
         self.sw_cin         = self.input.sw_cin      # CIN inhibition switch
         self.sw_store       = self.input.sw_store    # Tropospheric storage switch    
@@ -127,7 +126,7 @@ class model:
         self.beta       = self.input.beta       # entrainment ratio for virtual heat [-]
         self.wtheta     = self.input.wtheta     # surface kinematic heat flux [K m s-1]
         self.wthetae    = None                  # entrainment kinematic heat flux [K m s-1]
-
+        self.theta_ft0  = self.input.theta_ft0
         self.wstar      = 0.                    # convective velocity scale [m s-1]
 
         # 2m diagnostic variables
@@ -166,14 +165,15 @@ class model:
         self.wq         = self.input.wq         # surface kinematic moisture flux [kg kg-1 m s-1]
         self.wqe        = None                  # entrainment moisture flux [kg kg-1 m s-1]
         self.wqM        = None                  # moisture cumulus mass flux [kg kg-1 m s-1]
-        self.phi_cu = self.input.phi_cu         # ...
+        self.phi_cu     = self.input.phi_cu         # ...
+        self.q_ft0      = self.input.q_ft0
         
         self.qsat       = None                  # mixed-layer saturated specific humidity [kg kg-1]
         self.esat       = None                  # mixed-layer saturated vapor pressure [Pa]
         self.e          = None                  # mixed-layer vapor pressure [Pa]
         self.qsatsurf   = None                  # surface saturated specific humidity [g kg-1]
         self.dqsatdT    = None                  # slope saturated specific humidity curve [g kg-1 K-1]
-        self.qsat_h = None # saturated specific humidity at mixed-layer top [kg kg-1]
+        self.qsat_h     = None # saturated specific humidity at mixed-layer top [kg kg-1]
         
         # CO2
         fac = self.mair / (self.rho*self.mco2)  # Conversion factor mgC m-2 s-1 to ppm m s-1
@@ -297,12 +297,12 @@ class model:
         self.ac         = 0.                    # Cloud core fraction [-]
         self.M          = 0.                    # Cloud core mass flux [m s-1]
         self.wqM        = 0.                    # Cloud core moisture flux [kg kg-1 m s-1]
-
-        # initialize CIN parametrization
-        self.M_real     = 0.                    # Flux reduced by CIN
-        self.wqM_real   = 0.                    # Flux reduced by CIN
         self.wcld_prefact = self.input.wcld_prefact  # scaling parameter of cloud core velocity with Deardorff velocity scale
-
+        
+        # initialize plume data
+        self.w_lfc      = 0                     # Plume ertical velocity at the LFC [m s-1]
+        self.cin        = np.nan
+        
         # initialize tropospheric storage
         self.hstore     = self.input.hstore # thickness of storage layer in free troposphere [m]
         self.Stheta     = 0.     # Amount of free troposperic heat storage [K m]
@@ -342,7 +342,7 @@ class model:
             for name, var_tuple in self.timedep.items():
                 # check if `name` is a class variable which we can update:
                 if hasattr(self, name):
-                    max_time = self.tstart + self.input.runtime
+                    max_time = self.dt * self.tsteps 
                     times = var_tuple[0]
                     values = var_tuple[1]
                     if times.size != values.size:
@@ -372,18 +372,19 @@ class model:
 
         if(self.sw_ls):
             self.run_land_surface()
-
-        if(self.sw_cu):
-            self.run_mixed_layer()
-            self.run_cumulus()
-
-        if(self.sw_ml):
-            self.run_mixed_layer()
+        for i in range(5):
+            if(self.sw_cu):
+                self.run_mixed_layer()
+                # run plume calculations
+                self.run_cumulus()
+    
+            if(self.sw_ml):
+                self.run_mixed_layer()
 
     def timestep(self):
         # Update height or time dependent variables
         self.update_time_height_dependence()
-
+        
         # Calculate some derived properties
         self.statistics()
 
@@ -399,20 +400,8 @@ class model:
         if(self.sw_ls):
             self.run_land_surface()
             
-        # run plume calculations
-        if (self.sw_plume):
-            self.zmax = self.input.zmax_fact * self.h  #low maximum height for plume calc since we only take into account a CIN layer close to the ML. 
-            self.cin, self.w_lfc, _, _ = parcel_from_srf_zdep.main(self)
-            
-        
-        # run CIN model to adjust cumulus mass and specific humidity fluxes based on vertical velocity ratio w_LFC / w_LCL
-        if (self.sw_cin):
-            self.run_cin()
-        else:
-            self.M_real = self.M
-            self.wqM_real = self.wqM
-            
-        # run cumulus parameterization
+
+        # run cumulus parameterization (taking into account CIN if sw_cin == true)
         if(self.sw_cu):
             self.run_cumulus()
 
@@ -438,12 +427,13 @@ class model:
 
         # Update time varying variables
         if self.timedep is not None:
-            time = self.t*self.dt 
+            time = self.t * self.dt 
             for name, var_tupple in self.timedep.items():
                 # check if `name` is a class variable which we can update:
                 if hasattr(self, name):
                     # Extract arrays with times and values from input, and interpolate:
                     times   = var_tupple[0]
+                    
                     values  = var_tupple[1]
                     new_val = np.interp(time, times, values)
 
@@ -480,14 +470,11 @@ class model:
         # Calculate virtual temperatures
         self.thetav   = self.theta  + 0.61 * self.theta * self.q
         self.wthetav  = self.wtheta + 0.61 * self.theta * self.wq
-        self.dthetav  = (self.theta + self.dtheta) * (1. + 0.61 * (self.q + self.dq)) - self.theta * (1. + 0.61 * self.q)
-
+        self.dthetav  = (self.theta + self.dtheta) * (1. + 0.61 * (self.q + self.dq)) - self.thetav
+        assert (self.dthetav > 0), "dthetav is negative! t={}".format(self.t)
         # Mixed-layer top properties
         self.P_h    = self.Ps - self.rho * self.g * self.h
         self.T_h    = self.theta - self.g/self.cp * self.h
-
-        #self.P_h    = self.Ps / np.exp((self.g * self.h)/(self.Rd * self.theta))
-        #self.T_h    = self.theta / (self.Ps / self.P_h)**(self.Rd/self.cp)
 
         self.RH_h   = self.q / qsat(self.T_h, self.P_h)
 
@@ -522,13 +509,13 @@ class model:
         c2 = self.RH_h / esat_h * desatdT * self.g / self.cp - self.rho * self.g * self.RH_h / self.P_h # ABL-growth pre-factor 
         self.RHtend_wqs   =   c0 * self.wq
         self.RHtend_wqe   =   c0 * self.wqe
-        self.RHtend_wqM   = - c0 * self.wqM_real  
+        self.RHtend_wqM   = - c0 * self.wqM  
         self.RHtend_wth   =   c1 * self.wtheta
         self.RHtend_wthe  =   c1 * self.wthetae
         self.RHtend_we    =   c2 * self.we
         self.RHtend_ws    =   c2 * self.ws
         self.RHtend_wf    =   c2 * self.wf
-        self.RHtend_M     = - c2 * self.M_real 
+        self.RHtend_M     = - c2 * self.M 
         self.RHtend_advth =   c1  * self.advtheta * self.h
         self.RHtend_advq  =   c0 * self.advq * self.h
 
@@ -541,17 +528,30 @@ class model:
             self.q2_h   = -(self.wqe  + self.wqM  ) * self.dq   * self.h / (self.dz_h * self.wstar)
             self.CO22_h = -(self.wCO2e+ self.wCO2M) * self.dCO2 * self.h / (self.dz_h * self.wstar)
         else:
-            self.q2_h   = np.nan
-            self.CO22_h = np.nan
+            self.q2_h   = 0
+            self.CO22_h = 0
 
         # calculate cloud core fraction (ac), mass flux (M) and moisture flux (wqM)
-        self.ac     = max(0., 0.5 + 0.36 * np.arctan(1.55 * ((self.q - qsat(self.T_h, self.P_h)) / self.q2_h**0.5)))
-
-        if self.sw_cin:
-            self.M      = self.ac * self.wstar
+        if self.q2_h > 0:  # prevent invalid values when surface flux is negative
+            self.ac     = max(0., 0.5 + 0.36 * np.arctan(1.55 * ((self.q - qsat(self.T_h, self.P_h)) / self.q2_h**0.5)))
+        else:
+            self.ac = 0
+            
+       
+        if (self.sw_plume and self.ac > 0):
+            self.cin, self.w_lfc, _, _ = parcel_from_srf_zdep.main(self)  # run plume calculations
+        else:
+            self.w_lfc = 0
+            self.cin = np.nan    
+            
+        if self.sw_cin:   
+            self.M     = self.ac * self.w_lfc
+            if self.M > self.wthetav / self.dthetav and self.M > 0:  # impose upper limit to M
+                self.M = self.wthetav / self.dthetav
 
         else:
             self.M      = self.wcld_prefact * self.ac * self.wstar
+
 
         self.wqM    = self.phi_cu * self.M * self.q2_h**0.5
     
@@ -562,15 +562,6 @@ class model:
             self.wCO2M  = 0.
 
 
-    def run_cin(self):
-        if not self.sw_plume:
-                print('Error: SW_CIN=True but SW_PLUME=False. CIN cannot be calculated without the plume model')
-
-        self.M_real = (self.w_lfc / self.wstar) * self.M
-        self.wqM_real = (self.w_lfc / self.wstar) * self.wqM
-        if self.M_real > self.wthetav / self.dthetav and self.M_real > 0:  
-            self.M_real = self.wthetav / self.dthetav
-            self.wqM_real = self.phi_cu * self.M_real * self.q2_h ** 0.5
         
     def run_mixed_layer(self):
         if(not self.sw_sl):
@@ -620,21 +611,22 @@ class model:
 
 
         # Calculate tendencies
-        if self.sw_store and self.M_real > 0:  # tendency of tropospheric storage
-                self.Sthetatend = -self.M_real * self.dtheta - (self.we - self.M_real) * self.Stheta / self.hstore
-                self.Sqtend = self.M_real * (self.phi_cu * self.q2_h**0.5 - self.dq) - (self.we - self.M_real) * self.Sq / self.hstore
+        if self.sw_store and self.M > 0:  # tendency of tropospheric storage
+                self.Sthetatend = -self.M * self.dtheta - (self.we - self.M) * self.Stheta / self.hstore
+                self.Sqtend = self.M * (self.phi_cu * self.q2_h**0.5 - self.dq) - (self.we - self.M) * self.Sq / self.hstore
         else:
             self.Sthetatend = 0
             self.Sqtend = 0
         
-        self.htend       = self.we + self.ws + self.wf - self.M_real
+        self.htend       = self.we + self.ws + self.wf - self.M
 
         self.thetatend   = (self.wtheta - self.wthetae             ) / self.h + self.advtheta
-        self.qtend       = (self.wq     - self.wqe     - self.wqM_real  ) / self.h + self.advq
+        self.qtend       = (self.wq     - self.wqe     - self.wqM) / self.h + self.advq
         self.CO2tend     = (self.wCO2   - self.wCO2e   - self.wCO2M) / self.h + self.advCO2
 
-        self.dthetatend  = self.gammatheta * (self.we + self.wf - self.M_real) + self.Sthetatend / self.hstore - self.thetatend + w_th_ft
-        self.dqtend      = self.gammaq     * (self.we + self.wf - self.M_real) + self.Sqtend / self.hstore - self.qtend     + w_q_ft
+        self.dthetatend  = self.gammatheta * (self.we + self.wf - self.M) + self.Sthetatend / self.hstore - self.thetatend + w_th_ft 
+        
+        self.dqtend      = self.gammaq     * (self.we + self.wf - self.M) + self.Sqtend / self.hstore - self.qtend     + w_q_ft
         self.dCO2tend    = self.gammaCO2   * (self.we + self.wf - self.M) - self.CO2tend   + w_CO2_ft
 
         # assume u + du = ug, so ug - u = du
@@ -679,7 +671,8 @@ class model:
         self.CO2      = CO20    + self.dt * self.CO2tend
         self.dCO2     = dCO20   + self.dt * self.dCO2tend
         self.dz_h     = dz0     + self.dt * self.dztend
-
+        self.Stheta  += self.dt * self.Sthetatend
+        self.Sq      += self.dt * self.Sqtend
         # Limit dz to minimal value
         dz0 = 50
         if(self.dz_h < dz0):
@@ -998,8 +991,7 @@ class model:
         self.out.wq[t]         = self.wq
         self.out.wqe[t]        = self.wqe
         self.out.wqM[t]        = self.wqM
-        self.out.wqM_real[t]   = self.wqM_real
-        self.out.M_real[t]     = self.M_real
+
         self.out.qsat[t]       = self.qsat
         self.out.e[t]          = self.e
         self.out.esat[t]       = self.esat
@@ -1055,11 +1047,15 @@ class model:
 
         self.out.zlcl[t]       = self.lcl
         self.out.RH_h[t]       = self.RH_h
+        self.out.we[t]         = self.we
 
         self.out.ac[t]         = self.ac
         self.out.M[t]          = self.M
         self.out.dz[t]         = self.dz_h
-
+        self.out.w_lfc[t]      = self.w_lfc
+        self.out.cin[t]        = self.cin
+        self.out.q2_h[t]       = self.q2_h
+ 
         self.out.Stheta[t]     = self.Stheta
         self.out.Sq[t]         = self.Sq
         
@@ -1249,8 +1245,6 @@ class model_output:
         self.wq         = np.zeros(tsteps)    # surface kinematic moisture flux [kg kg-1 m s-1]
         self.wqe        = np.zeros(tsteps)    # entrainment kinematic moisture flux [kg kg-1 m s-1]
         self.wqM        = np.zeros(tsteps)    # cumulus mass-flux kinematic moisture flux [kg kg-1 m s-1]
-        self.wqM_real   = np.zeros(tsteps)
-        self.M_real     = np.zeros(tsteps)
         
         self.qsat       = np.zeros(tsteps)    # mixed-layer saturated specific humidity [kg kg-1]
         self.e          = np.zeros(tsteps)    # mixed-layer vapor pressure [Pa]
@@ -1314,12 +1308,15 @@ class model_output:
         # Mixed-layer top variables
         self.zlcl       = np.zeros(tsteps)    # lifting condensation level [m]
         self.RH_h       = np.zeros(tsteps)    # mixed-layer top relative humidity [-]
+        self.we         = np.zeros(tsteps)
 
         # cumulus variables
         self.ac         = np.zeros(tsteps)    # cloud core fraction [-]
         self.M          = np.zeros(tsteps)    # cloud core mass flux [m s-1]
         self.dz         = np.zeros(tsteps)    # transition layer thickness [m]
-        
+        self.w_lfc      = np.zeros(tsteps)
+        self.cin        = np.zeros(tsteps)
+        self.q2_h       = np.zeros(tsteps)
         
         # tropospheric storage variables
         self.Stheta     = np.zeros(tsteps)
